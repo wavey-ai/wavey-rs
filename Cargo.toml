@@ -1,0 +1,22 @@
+[package]
+name = "wavey"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Audio format optimised for low-latency audio."
+repository = "https://github.com/wavey-ai/wavey-rs"
+readme = "README.md"
+
+[dependencies]
+libopus = { path = "../opus-rs" }
+serde_derive = "1.0.164"
+structopt = "0.3"
+image = "0.24.6"
+imageproc = "0.23.0"
+rustfft = "6.1.0"
+rusttype = "0.9.3"
+
+
+[[bin]]
+name = "wavey"
+path = "src/main.rs"
