@@ -1101,6 +1101,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "svg"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d815ad337e8449d2374d4248448645edfe74e699343dd5719139d93fa87112"
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1293,10 +1299,12 @@ dependencies = [
  "image",
  "imageproc",
  "libopus",
+ "png",
  "rustfft",
  "rusttype",
  "serde_derive",
  "structopt",
+ "svg",
 ]
 
 [[package]]

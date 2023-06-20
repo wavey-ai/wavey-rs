@@ -1,21 +1,65 @@
+use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgba, RgbaImage};
+use imageproc::contrast::equalize_histogram;
 use rustfft::algorithm::Radix4;
 use rustfft::num_traits::Zero;
 use rustfft::{num_complex::Complex, FftPlanner};
-use std::sync::Arc;
-
-use image::codecs::png::PngEncoder;
-use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgba, RgbaImage};
-use imageproc::contrast::equalize_histogram;
 use rusttype::{Font, Scale};
 use std::cmp;
 use std::io::Cursor;
+use std::path::Path;
 
-pub fn save_spectrogram(frames: &Vec<Vec<Vec<f32>>>, eq: bool, fileprefix: &str, sample_rate: u32) {
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+use std::thread;
+
+pub fn waveform_image(data: &[Vec<Vec<(u32, u32, Rgba<u8>)>>], height: u32) -> RgbaImage {
+    let mut max_x = 0;
+    let mut offset = 0;
+
+    for buffer_data in data {
+        let mut x_offset = 0;
+        for channel_data in buffer_data {
+            for &(x, _, _) in channel_data {
+                if x > x_offset {
+                    x_offset = x;
+                }
+            }
+        }
+        offset += x_offset;
+    }
+
+    let mut imgbuf = ImageBuffer::new(offset + 1, height);
+
+    offset = 0;
+
+    for buffer_data in data {
+        let mut x_offset = 0;
+        for channel_data in buffer_data {
+            for &(x, y, color) in channel_data {
+                imgbuf.put_pixel(x + offset, y, color);
+                if x > x_offset {
+                    x_offset = x;
+                }
+            }
+        }
+        offset += x_offset;
+    }
+
+    imgbuf
+}
+
+pub fn save_spectrogram(
+    frames: &Vec<Vec<Vec<f32>>>,
+    eq: bool,
+    out_dir: &str,
+    fileprefix: &str,
+    sample_rate: u32,
+) {
     let width = frames[0].len();
     let height = frames[0][0].len();
 
     for i in 0..frames.len() {
-        let tile_width = 10000; // Width of each tile in pixels
+        let tile_width = 10000;
         let mut start_pixel = 0;
 
         while start_pixel < width {
@@ -33,26 +77,77 @@ pub fn save_spectrogram(frames: &Vec<Vec<Vec<f32>>>, eq: bool, fileprefix: &str,
                 }
             }
 
-            let name: String = format!("{}{}_{}.png", fileprefix, i, start_pixel);
+            let name: String = format!("{}/{}{}_{}.png", out_dir, fileprefix, i, start_pixel);
             imgbuf.save(name).unwrap();
-
             start_pixel += tile_width;
         }
     }
 }
 
-pub fn save_waveform(data: &Vec<Vec<f32>>, width: u32, height: u32, filename: &str) {
-    let mut imgbuf: RgbaImage = ImageBuffer::new(width, height);
+pub fn data_to_bytes(data: &[(u16, u16)]) -> Vec<u8> {
+    let total_elements = data.len();
+    let buffer_size = total_elements * std::mem::size_of::<u16>();
+    let mut buf: Vec<u8> = Vec::with_capacity(buffer_size);
+
+    for &(x, y) in data {
+        let x_bytes = u16::to_le_bytes(x);
+        let y_bytes = u16::to_le_bytes(y);
+
+        buf.extend_from_slice(&x_bytes);
+        buf.extend_from_slice(&y_bytes);
+    }
+
+    buf
+}
+
+pub fn waveform_vector_data(data: Vec<f32>, samples_per_pixel: usize, height: usize) -> Vec<(u16, u16)> {
+    let mut waveform: Vec<(u16, u16)> = Vec::new();
+
+    for chunk in data.chunks(samples_per_pixel) {
+        let (positive_avg, negative_avg) = average_values(chunk);
+        waveform.push(
+            calculate_y_values(negative_avg, positive_avg, height)
+        );
+
+    }
+
+    dbg!(&waveform);
+    waveform
+}
+
+fn average_values(data: &[f32]) -> (f32, f32) {
+    let positive_sum = data.iter().filter(|&x| *x > 0.0).sum::<f32>();
+    let negative_sum = data.iter().filter(|&x| *x < 0.0).sum::<f32>();
+    let positive_len = data.iter().filter(|&x| *x > 0.0).count();
+    let negative_len = data.iter().filter(|&x| *x < 0.0).count();
+
+    let positive_avg = positive_sum / positive_len as f32;
+    let negative_avg = negative_sum / negative_len as f32;
+
+    (positive_avg, negative_avg)
+}
+
+fn calculate_y_values(min_val: f32, max_val: f32, height: usize) -> (u16, u16) {
+    let min_y = ((min_val + 1.0) / 2.0 * height as f32) as u16;
+    let max_y = ((max_val + 1.0) / 2.0 * height as f32) as u16;
+    let clamped_max_y = max_y.min(height as u16 - 1);
+    (min_y, clamped_max_y)
+}
+
+pub fn frame_waveform(
+    data: &Vec<Vec<f32>>,
+    samples_per_pixel: usize,
+    height: u32,
+) -> Vec<Vec<(u32, u32, Rgba<u8>)>> {
+    let mut pixelbuf: Vec<Vec<(u32, u32, Rgba<u8>)>> = Vec::new();
+    for _ in 0..data.len() {
+        let inner_vec: Vec<(u32, u32, Rgba<u8>)> = Vec::new();
+        pixelbuf.push(inner_vec);
+    }
+
     for (channel_index, channel_data) in data.iter().enumerate() {
-        // the number of audio samples that will be represented by each column of pixels
-        let samples_per_pixel = channel_data.len() / width as usize;
-
-        for (x, chunk) in channel_data.chunks(samples_per_pixel).enumerate() {
+        for (x, chunk) in channel_data.chunks_exact(samples_per_pixel).enumerate() {
             let x = x as u32;
-            if x >= width {
-                break;
-            }
-
             let color = match channel_index {
                 0 => Rgba([200u8, 200u8, 200u8, 255u8]),
                 _ => Rgba([180u8, 180u8, 180u8, 255u8]),
@@ -70,13 +165,41 @@ pub fn save_waveform(data: &Vec<Vec<f32>>, width: u32, height: u32, filename: &s
             let min_y = ((min_val + 1.0) / 2.0 * (height as f32)) as u32;
             let max_y = ((max_val + 1.0) / 2.0 * (height as f32)) as u32;
 
-            for y in min_y..=max_y {
-                imgbuf.put_pixel(x, y, color);
+            let clamped_max_y = max_y.min(height - 1);
+            for y in min_y..=clamped_max_y {
+                pixelbuf[channel_index].push((x, y, color));
+            }
+        }
+
+        // Process remaining samples
+        let remaining_chunk = channel_data.chunks(samples_per_pixel).last();
+        if let Some(chunk) = remaining_chunk {
+            let x = channel_data.len() as u32 / samples_per_pixel as u32;
+            let color = match channel_index {
+                0 => Rgba([200u8, 200u8, 200u8, 255u8]),
+                _ => Rgba([180u8, 180u8, 180u8, 255u8]),
+            };
+
+            let min_val = *chunk
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(&0.0);
+            let max_val = *chunk
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(&0.0);
+
+            let min_y = ((min_val + 1.0) / 2.0 * (height as f32)) as u32;
+            let max_y = ((max_val + 1.0) / 2.0 * (height as f32)) as u32;
+
+            let clamped_max_y = max_y.min(height - 1);
+            for y in min_y..=clamped_max_y {
+                pixelbuf[channel_index].push((x, y, color));
             }
         }
     }
 
-    imgbuf.save(filename).unwrap();
+    pixelbuf
 }
 
 pub fn frame_spectrogram(
@@ -166,3 +289,10 @@ fn percentile_norm(input: &[f32], percentile: f32) -> Vec<f32> {
 
     input.iter().map(|&x| x / norm_factor).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+}
+

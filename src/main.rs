@@ -4,10 +4,22 @@ use libopus::encoder::*;
 use std::io::{self, Error, Read, Write};
 use structopt::StructOpt;
 
-use wavey::av::{frame_spectrogram, save_spectrogram};
+use wavey::av::{
+    data_to_bytes, frame_spectrogram, frame_waveform, save_spectrogram,
+     waveform_vector_data,
+};
 use wavey::packet::{decode_audio_packet_header, encode_audio_packet, HEADER_SIZE};
 use wavey::types::{AudioConfig, EncodingFlag};
 use wavey::utils::deinterleave_vecs_f32;
+
+use image::ImageBuffer;
+use image::Rgba;
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Instant;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "soundkit", about = "An audio encoding utility.")]
@@ -20,6 +32,16 @@ struct Command {
     bits_per_sample: u8,
     #[structopt(short, long, default_value = "2")]
     channel_count: u8,
+    #[structopt(short, long, default_value = "out")]
+    out_dir: String,
+    #[structopt(short, long, default_value = "4")]
+    workers: usize,
+    #[structopt(long, default_value = "24")]
+    samples_per_pixel: usize,
+    #[structopt(long, default_value = "1024")]
+    waveform_y: usize,
+    #[structopt(long, default_value = "40000")]
+    waveform_x: usize,
 }
 #[derive(Debug, StructOpt)]
 enum SubCommand {
@@ -39,11 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bits_per_sample = args.bits_per_sample;
     let channel_count = args.channel_count;
     let bytes_per_sample = bits_per_sample / 8;
-
     println!("Sampling Rate: {}", args.sampling_rate);
     println!("Bits per Sample: {}", args.bits_per_sample);
     println!("Channel Count: {}", args.channel_count);
-
     match args.cmd {
         Some(SubCommand::Encode) => {
             let mut encoded_data = Vec::new();
@@ -118,17 +138,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             const HOP: usize = 256;
             const NORM: f32 = 0.0;
 
-            let len = bytes_per_sample as usize * channel_count as usize * WIN;
+            let start = Instant::now();
 
+            let (sender, receiver) = mpsc::channel();
+            let out_dir = args.out_dir.clone();
+
+            let process_thread = thread::spawn(move || {
+                let receiver = Arc::new(Mutex::new(receiver));
+                process_tasks(receiver, out_dir.clone(), args.workers);
+            });
+
+            let len = bytes_per_sample as usize * channel_count as usize * WIN;
             let mut buffer = vec![0; len];
             let mut channel_frames: Vec<Vec<Vec<f32>>> = vec![Vec::new(); channel_count as usize];
+            let mut pixelbuf: Vec<Vec<Vec<(u32, u32, Rgba<u8>)>>> = Vec::new();
+            let mut sampleIdx = 0;
+            let mut startSampleIdx = 0;
+            let mut processedBytes = 0;
+            let height = args.waveform_y;
+            let spp = args.samples_per_pixel;
 
+            let mut waveform = Vec::new();
+            let mut frame_count: u16 = 0; 
+            let desired_waveform_buf_len = args.waveform_x
+                * args.samples_per_pixel
+                * channel_count as usize
+                * bytes_per_sample as usize;
             loop {
                 let bytes_read = input.read(&mut buffer)?;
                 accumulated_bytes.extend_from_slice(&buffer[..bytes_read]);
                 if bytes_read == 0 || accumulated_bytes.len() >= len {
                     while accumulated_bytes.len() >= len {
                         let (chunk, rest) = accumulated_bytes.split_at_mut(len);
+                        sampleIdx +=
+                            chunk.len() / channel_count as usize / bytes_per_sample as usize;
+
                         let data: Vec<Vec<f32>> =
                             deinterleave_vecs_f32(&chunk, channel_count as usize)
                                 .into_iter()
@@ -139,11 +183,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     d
                                 })
                                 .collect();
-                        for (i, pcm_data) in data.into_iter().enumerate() {
-                            let frame_data = frame_spectrogram(pcm_data, WIN, HOP, NORM);
+                        for (i, pcm_data) in data.clone().into_iter().enumerate() {
+                            let frame_data = frame_spectrogram(pcm_data.clone(), WIN, HOP, NORM);
+                            let data = waveform_vector_data(pcm_data, spp, height);
+                            let buf = data_to_bytes(&data);
+                            waveform.extend_from_slice(&buf);
                             channel_frames[i].extend(frame_data);
                         }
-
+                        frame_count += 1;
+                            
+                        pixelbuf.push(frame_waveform(
+                            &data,
+                            args.samples_per_pixel,
+                            args.waveform_y as u32,
+                        ));
+                        processedBytes += chunk.len();
                         accumulated_bytes = rest.to_vec();
                     }
                 }
@@ -152,10 +206,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
             }
-            if channel_frames[0].len() > 0 {
-                save_spectrogram(&channel_frames, true, "out/sono-eq", 48000);
-                save_spectrogram(&channel_frames, false, "out/sono-ue", 48000);
-            }
+
+            /*         save_spectrogram(
+                            &channel_frames,
+                            true,
+                            &args.out_dir,
+                            "sono-eq",
+                            sampling_rat,
+                        );
+                        save_spectrogram(
+                            &channel_frames,
+                            false,
+                            &args.out_dir,
+                            "sono-ue",
+                            sampling_rate,
+                        );
+            */
+
+           let mut header = (height as u16).to_le_bytes().to_vec();
+            header.extend_from_slice(&(WIN as u16).to_le_bytes().to_vec());
+            header.extend_from_slice(&(spp as u16).to_le_bytes().to_vec());
+            header.extend_from_slice(&(channel_count as u16).to_le_bytes().to_vec());
+            header.extend_from_slice(&(frame_count as u16).to_le_bytes().to_vec());
+            header.extend_from_slice(&waveform);
+            let name = format!("{}/{}", args.out_dir, "waveform.raw");
+            let path = Path::new(&name);
+ 
+            std::fs::write(path, &header).unwrap();
+ 
+            drop(sender); // Signal the end of tasks
+
+            process_thread.join().unwrap();
+
+            let duration = start.elapsed();
+            println!("Execution time: {:?}", duration);
 
             Ok(())
         }
@@ -163,6 +247,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("No command specified");
             std::process::exit(1);
         }
+    }
+}
+
+fn process_tasks(
+    receiver: Arc<Mutex<Receiver<(usize, ImageBuffer<Rgba<u8>, Vec<u8>>)>>>,
+    out_dir: String,
+    num_workers: usize,
+) {
+    let mut handles = Vec::new();
+
+    for _ in 0..num_workers {
+        let receiver = Arc::clone(&receiver);
+        let out_dir_clone = out_dir.clone();
+
+        let handle = thread::spawn(move || {
+            loop {
+                // Acquire the lock on the receiver
+                let task = {
+                    let lock = receiver.lock().unwrap();
+                    lock.recv().ok()
+                };
+
+                // Check if the channel is closed or no more tasks are available
+                if task.is_none() {
+                    break;
+                }
+
+                let (chunk_idx, imgbuf) = task.unwrap();
+
+                let name = format!("{}/{}-{}.webp", out_dir_clone, "wave", chunk_idx);
+                let path = Path::new(&name);
+                dbg!(path);
+                imgbuf.save(path).unwrap();
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
     }
 }
 

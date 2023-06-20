@@ -63,6 +63,8 @@ pub fn deinterleave_vecs_f32(input: &[u8], channel_count: usize) -> Vec<Vec<f32>
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_deinterleave_vecs_i16() {
         let input = vec![1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0]; // Little Endian u16 values [1, 2, 3, 4, 5, 6]
