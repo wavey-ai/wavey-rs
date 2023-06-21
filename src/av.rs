@@ -93,17 +93,11 @@ pub fn process_frame(
 
         for chunk in windowed_data.chunks(samples_per_point) {
             // Calculate the squared values for waveform calculation
-            let squared_values: Vec<f32> = chunk.iter().map(|x| x * x).collect();
-
-            // Calculate the average of squared values for waveform
             let average_value: f32 =
-                squared_values.iter().sum::<f32>() / squared_values.len() as f32;
-
-            // Take the square root of the average_value to get the original value
-            let original_value = average_value.sqrt();
+                chunk.iter().sum::<f32>() / chunk.len() as f32;
 
             // Scale the original_value to the range of u16::MIN to u16::MAX
-            let scaled_value = ((original_value + 1.0) / 2.0 * max_y as f32) as u16;
+            let scaled_value = ((average_value + 1.0) / 2.0 * max_y as f32) as u16;
 
             waveform.push(scaled_value);
         }

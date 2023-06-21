@@ -34,12 +34,8 @@ struct Command {
     out_dir: String,
     #[structopt(short, long, default_value = "4")]
     workers: usize,
-    #[structopt(long, default_value = "24")]
+    #[structopt(long, default_value = "12")]
     samples_per_pixel: usize,
-    #[structopt(long, default_value = "1024")]
-    waveform_y: usize,
-    #[structopt(long, default_value = "40000")]
-    waveform_x: usize,
 }
 #[derive(Debug, StructOpt)]
 enum SubCommand {
@@ -143,12 +139,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let mut channel_frames: Vec<Vec<Vec<f32>>> = vec![Vec::new(); channel_count as usize];
-            let height = args.waveform_y;
             let spp = args.samples_per_pixel;
             let mut frame_count: u16 = 0;
 
-            const WIN: usize = 384;
-            const HOP: usize = 192;
+            const WIN: usize = 768;
+            const HOP: usize = 256;
 
             let bytes_per_samples = bytes_per_sample as usize * channel_count as usize;
             let BUFFER_SIZE: usize = bytes_per_samples * (WIN * 8);
@@ -173,6 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             channel_frames[i].extend(spectrogram_frames);
                             waveform.extend_from_slice(&waveform_segment);
                         }
+                        frame_count += 1;
 
                         accumulated_bytes = rest.to_vec();
                     }
@@ -197,6 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     channel_frames[i].extend(spectrogram_frames);
                     waveform.extend_from_slice(&waveform_segment);
                 }
+                frame_count += 1;
             }
 
             /*         save_spectrogram(
@@ -215,12 +212,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
             */
 
-            let mut header = (height as u16).to_le_bytes().to_vec();
-            header.extend_from_slice(&(WIN as u16).to_le_bytes().to_vec());
-            header.extend_from_slice(&(spp as u16).to_le_bytes().to_vec());
-            header.extend_from_slice(&(channel_count as u16).to_le_bytes().to_vec());
-            header.extend_from_slice(&(frame_count as u16).to_le_bytes().to_vec());
-            header.extend_from_slice(&(frame_count as u16).to_le_bytes().to_vec());
+            let mut header = (WIN as u16).to_le_bytes().to_vec();
+            header.extend_from_slice(&(spp as u16).to_le_bytes());
+            header.extend_from_slice(&(channel_count as u16).to_le_bytes());
+            header.extend_from_slice(&(frame_count as u16).to_le_bytes());
             header.extend_from_slice(&u16vec_to_bytes(&waveform));
 
             let name = format!("{}/{}", args.out_dir, "waveform.raw");
