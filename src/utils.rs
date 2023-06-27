@@ -1,4 +1,4 @@
-pub fn deinterleave_vecs_i16(input: &[u8], channel_count: usize) -> Vec<Vec<i16>> {
+pub fn deinterleave_vecs_u16(input: &[u8], channel_count: usize) -> Vec<Vec<i16>> {
     let sample_size = input.len() / (channel_count * 2);
     let mut result = vec![vec![0; sample_size]; channel_count];
 
@@ -13,7 +13,7 @@ pub fn deinterleave_vecs_i16(input: &[u8], channel_count: usize) -> Vec<Vec<i16>
     result
 }
 
-pub fn interleave_vecs_i16(channels: &[Vec<i16>]) -> Vec<u8> {
+pub fn interleave_vecs_u16(channels: &[Vec<u16>]) -> Vec<u8> {
     let channel_count = channels.len();
     let sample_size = channels[0].len();
     let mut result = vec![0; channel_count * sample_size * 2];
@@ -25,6 +25,22 @@ pub fn interleave_vecs_i16(channels: &[Vec<i16>]) -> Vec<u8> {
             let start = (i * channel_count + channel) * 2;
             result[start] = bytes[0];
             result[start + 1] = bytes[1];
+        }
+    }
+
+    result
+}
+
+pub fn interleave_vecs_u8(channels: &[Vec<u8>]) -> Vec<u8> {
+    let channel_count = channels.len();
+    let sample_size = channels[0].len();
+    let mut result = vec![0; channel_count * sample_size];
+
+    for i in 0..sample_size {
+        for channel in 0..channel_count {
+            let value = channels[channel][i];
+            let start = i * channel_count + channel;
+            result[start] = value;
         }
     }
 
@@ -66,16 +82,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deinterleave_vecs_i16() {
+    fn test_deinterleave_vecs_u16() {
         let input = vec![1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0]; // Little Endian u16 values [1, 2, 3, 4, 5, 6]
-        let result = deinterleave_vecs_i16(&input, 2);
+        let result = deinterleave_vecs_u16(&input, 2);
         assert_eq!(result, vec![vec![1, 3, 5], vec![2, 4, 6]]);
     }
 
     #[test]
-    fn test_interleave_vecs_i16() {
+    fn test_interleave_vecs_u16() {
         let input = vec![vec![1, 3, 5], vec![2, 4, 6]];
-        let result = interleave_vecs_i16(&input);
+        let result = interleave_vecs_u16(&input);
         assert_eq!(result, vec![1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0]);
     }
 

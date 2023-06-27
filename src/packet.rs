@@ -85,6 +85,8 @@ pub fn encode_audio_packet(
                 32 => {
                     data.clone_from_slice(&buf[..]);
                 }
+                16 => {
+                }
                 _ => {
                     return Err(format!(
                         "Unsupported source bits per_sample: {}",

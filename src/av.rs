@@ -2,7 +2,7 @@ use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgba, RgbaImage};
 use imageproc::contrast::equalize_histogram;
 use rustfft::algorithm::Radix4;
 use rustfft::num_traits::Zero;
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustfft::{num_complex::Complex, Fft};
 use rusttype::{Font, Scale};
 use std::cmp;
 use std::io::Cursor;
@@ -61,27 +61,19 @@ pub fn u16vec_to_bytes(data: &[u16]) -> Vec<u8> {
     buf
 }
 
-pub fn process_frame(
-    pcm_data: Vec<f32>,
+pub fn process_waveform_frame(
+    pcm_data: &Vec<f32>,
     fft_size: usize,
     hop_size: usize,
     samples_per_point: usize,
-) -> (Vec<Vec<f32>>, Vec<u16>) {
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(fft_size);
-
-    // Compute Hamming window.
-    let hamming_window: Vec<f32> = (0..fft_size)
-        .map(|i| {
-            0.54 - 0.46 * ((2.0 * std::f32::consts::PI * i as f32) / (fft_size as f32 - 1.0)).cos()
-        })
-        .collect();
-
+    hamming_window: Vec<f32>,
+) -> Vec<u8> {
     // Initialize empty vectors for storing the processed FFT frames and waveform
     let mut all_fft_frames: Vec<Vec<f32>> = Vec::new();
-    let mut waveform: Vec<u16> = Vec::new();
+    let mut waveform: Vec<u8> = Vec::new();
 
-    let max_y: u16 = u16::MAX ; // 65534, so that 0 can be exactly represented as 32767
+    let max_value = 255.0; // Maximum value for u8
+
     let mut start = 0;
     while start + fft_size <= pcm_data.len() {
         // Apply the window function to the current portion of data
@@ -92,15 +84,62 @@ pub fn process_frame(
             .collect();
 
         for chunk in windowed_data.chunks(samples_per_point) {
-            // Calculate the squared values for waveform calculation
-            let average_value: f32 =
-                chunk.iter().sum::<f32>() / chunk.len() as f32;
+            let mut max_value = f32::NEG_INFINITY;
+            let mut min_value = f32::INFINITY;
 
-            // Scale the original_value to the range of u16::MIN to u16::MAX
-            let scaled_value = ((average_value + 1.0) / 2.0 * max_y as f32) as u16;
+            for &value in chunk {
+                if value > max_value {
+                    max_value = value;
+                }
+                if value < min_value {
+                    min_value = value;
+                }
+            }
 
-            waveform.push(scaled_value);
+            // Scale the maximum and minimum values to the range -255 to 255
+            let scaled_max = (max_value * 255.0).clamp(-255.0, 255.0) as i16;
+            let scaled_min = (min_value * 255.0).clamp(-255.0, 255.0) as i16;
+
+            // Convert the scaled values to u8 with sign encoding
+            let encoded_max = if scaled_max >= 0 {
+                (scaled_max as u8) | 0b1000_0000
+            } else {
+                ((-scaled_max) as u8) & 0b0111_1111
+            };
+
+            let encoded_min = if scaled_min >= 0 {
+                (scaled_min as u8) | 0b1000_0000
+            } else {
+                ((-scaled_min) as u8) & 0b0111_1111
+            };
+
+            // Push the encoded maximum and minimum values to the waveform
+            waveform.push(encoded_max);
+            waveform.push(encoded_min);
         }
+        start += hop_size;
+    }
+
+    waveform
+}
+
+pub fn process_sonograph_frame(
+    pcm_data: &Vec<f32>,
+    fft_size: usize,
+    hop_size: usize,
+    hamming_window: Vec<f32>,
+    fft: &Arc<dyn Fft<f32>>,
+) -> Vec<Vec<f32>> {
+    let mut fft_frames: Vec<Vec<f32>> = Vec::new();
+
+    let mut start = 0;
+    while start + fft_size <= pcm_data.len() {
+        // Apply the window function to the current portion of data
+        let windowed_data: Vec<f32> = pcm_data[start..start + fft_size]
+            .iter()
+            .zip(&hamming_window)
+            .map(|(x, w)| x * w)
+            .collect();
 
         // Apply FFT to the windowed data for spectrogram calculation
         let mut input_output: Vec<Complex<f32>> = windowed_data
@@ -118,12 +157,12 @@ pub fn process_frame(
             .take(fft_size / 2)
             .collect();
 
-        all_fft_frames.push(normalized_magnitudes);
+        fft_frames.push(normalized_magnitudes);
 
         start += hop_size;
     }
 
-    (all_fft_frames, waveform)
+    fft_frames
 }
 
 #[cfg(test)]
